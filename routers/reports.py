@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from database import get_db
 from models import Report, SiteType, ModerationLog
 from ai_verify import verify_report
+from archive import needs_archive, save_to_archive
 
 router = APIRouter(prefix="/api/reports", tags=["reports"])
 
@@ -56,8 +57,25 @@ async def create_report(
     # ソースURLがあればバックグラウンドでAI検証
     if body.source_url:
         background_tasks.add_task(run_ai_verify, report.id, db)
+        # 魚拓保存が必要なURLはバックグラウンドで保存
+        if needs_archive(body.source_url):
+            background_tasks.add_task(run_archive, report.id, body.source_url, db)
 
     return {"id": report.id, "status": report.status}
+
+
+async def run_archive(report_id: int, url: str, db: Session):
+    """魚拓保存バックグラウンドタスク"""
+    print(f"[Archive] 保存開始: {url}")
+    archive_url = await save_to_archive(url)
+    if archive_url:
+        report = db.query(Report).filter(Report.id == report_id).first()
+        if report:
+            report.archive_url = archive_url
+            db.commit()
+            print(f"[Archive] 保存完了: {archive_url}")
+    else:
+        print(f"[Archive] 保存失敗: {url}")
 
 
 async def run_ai_verify(report_id: int, db: Session):

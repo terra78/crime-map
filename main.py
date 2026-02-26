@@ -6,7 +6,7 @@ from apscheduler.triggers.cron import CronTrigger
 from datetime import datetime
 from pathlib import Path
 
-from routers import reports, admin
+from routers import reports, admin, site_types
 
 # ── バッチジョブ ──────────────────────────────────────────────────────────────
 def job_monthly():
@@ -50,6 +50,7 @@ app.add_middleware(
 
 app.include_router(reports.router)
 app.include_router(admin.router)
+app.include_router(site_types.router)
 
 @app.get("/")
 def root():

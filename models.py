@@ -31,6 +31,7 @@ class Report(Base):
     ai_score     = Column(Float)
     ai_reason    = Column(Text)
     submitted_by = Column(String(256))
+    archive_url  = Column(String(1024))
     created_at   = Column(DateTime, server_default=func.now())
     approved_at  = Column(DateTime)
 
