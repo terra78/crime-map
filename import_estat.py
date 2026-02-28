@@ -264,51 +264,69 @@ def parse_rows(headers: list[str], rows: list[list[str]], default_year: int | No
 def _insert(records: list[dict], dry_run: bool) -> tuple[int, int]:
     from database import SessionLocal
     from models import PrefectureStats
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-    inserted = skipped = 0
+    skipped = 0
+
+    # レコードを行リストに変換しつつ、都道府県名不明をスキップ
+    rows: list[dict] = []
+    for rec in records:
+        pref_info = _lookup_pref(rec["prefecture_name"])
+        if pref_info is None:
+            print(f"  [SKIP] 都道府県名不明: {rec['prefecture_name']}")
+            skipped += 1
+            continue
+        code, lat, lng = pref_info
+        prefecture_name = next(n for c, n, *_ in PREFECTURE_MASTER if c == code)
+        crime_type = _map_crime_type(rec["crime_category"])
+        rows.append({
+            "year":             rec["year"],
+            "prefecture_code":  code,
+            "prefecture_name":  prefecture_name,
+            "crime_category":   rec["crime_category"],
+            "crime_type":       crime_type,
+            "count_recognized": rec["count_recognized"],
+            "count_cleared":    rec.get("count_cleared"),
+            "count_arrested":   rec.get("count_arrested"),
+            "location":         f"SRID=4326;POINT({lng} {lat})",
+            "source":           "npa_estat",
+        })
+
+    # CSV内重複除去（同一 year+prefecture_code+crime_category は後勝ち）
+    seen: dict[tuple, dict] = {}
+    for row in rows:
+        key = (row["year"], row["prefecture_code"], row["crime_category"])
+        seen[key] = row
+    deduped = list(seen.values())
+    intra_dups = len(rows) - len(deduped)
+    if intra_dups:
+        print(f"  [INFO] CSV内重複 {intra_dups} 件を除去")
+    skipped += intra_dups
+
+    if dry_run:
+        return len(deduped), skipped
+
+    # UPSERT（ON CONFLICT DO UPDATE）
     db = SessionLocal()
     try:
-        for rec in records:
-            pref_info = _lookup_pref(rec["prefecture_name"])
-            if pref_info is None:
-                print(f"  [SKIP] 都道府県名不明: {rec['prefecture_name']}")
-                skipped += 1
-                continue
-            code, lat, lng = pref_info
-
-            crime_type = _map_crime_type(rec["crime_category"])
-
-            # 重複チェック（year + prefecture_code + crime_category）
-            exists = db.query(PrefectureStats).filter_by(
-                year=rec["year"],
-                prefecture_code=code,
-                crime_category=rec["crime_category"],
-            ).first()
-            if exists:
-                skipped += 1
-                continue
-
-            if not dry_run:
-                row = PrefectureStats(
-                    year            = rec["year"],
-                    prefecture_code = code,
-                    prefecture_name = pref_info[0] if False else  # 名前は別途解決
-                                      next(n for c, n, *_ in PREFECTURE_MASTER if c == code),
-                    crime_category  = rec["crime_category"],
-                    crime_type      = crime_type,
-                    count_recognized= rec["count_recognized"],
-                    count_cleared   = rec["count_cleared"],
-                    count_arrested  = rec["count_arrested"],
-                    location        = f"SRID=4326;POINT({lng} {lat})",
-                )
-                db.add(row)
-            inserted += 1
-
-        if not dry_run:
-            db.commit()
+        stmt = pg_insert(PrefectureStats).values(deduped)
+        stmt = stmt.on_conflict_do_update(
+            constraint="prefecture_stats_year_prefecture_code_crime_category_key",
+            set_={
+                "crime_type":       stmt.excluded.crime_type,
+                "count_recognized": stmt.excluded.count_recognized,
+                "count_cleared":    stmt.excluded.count_cleared,
+                "count_arrested":   stmt.excluded.count_arrested,
+                "location":         stmt.excluded.location,
+                "source":           stmt.excluded.source,
+            },
+        )
+        db.execute(stmt)
+        db.commit()
     finally:
         db.close()
-    return inserted, skipped
+
+    return len(deduped), skipped
 
 
 # ── NPA月次統計フォーマット（第X表形式）パーサー ─────────────────────────────
