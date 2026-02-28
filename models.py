@@ -36,6 +36,24 @@ class Report(Base):
     approved_at  = Column(DateTime)
 
 
+class PrefectureStats(Base):
+    """警察庁オープンデータ（e-Stat）の都道府県別・年次集計"""
+    __tablename__ = "prefecture_stats"
+
+    id                = Column(Integer, primary_key=True)
+    year              = Column(Integer, nullable=False)
+    prefecture_code   = Column(String(2), nullable=False)   # 01〜47
+    prefecture_name   = Column(String(16), nullable=False)
+    crime_category    = Column(String(64))   # 警察庁の罪種分類（例: 窃盗犯、凶悪犯）
+    crime_type        = Column(String(64))   # 既存 crime_type へのマッピング後
+    count_recognized  = Column(Integer)      # 認知件数
+    count_cleared     = Column(Integer)      # 検挙件数
+    count_arrested    = Column(Integer)      # 検挙人員
+    location          = Column(Geometry("POINT", srid=4326))  # 都道府県庁の代表座標
+    source            = Column(String(64), default="npa_estat")
+    imported_at       = Column(DateTime, server_default=func.now())
+
+
 class ModerationLog(Base):
     __tablename__ = "moderation_log"
 
