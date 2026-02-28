@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """
-警察庁オープンデータ（e-Stat CSV）インポートスクリプト
+警察庁オープンデータ CSVインポートスクリプト
 
 使い方:
     python import_estat.py <CSVファイルパス> [--year 2023] [--dry-run]
 
 対応フォーマット:
-    e-Stat 第6表: 日付,地方,area_code,都道府県,...,罪種,認知件数,検挙件数,検挙人員
-    e-Stat 第3表: 都道府県,認知件数【件】,検挙件数【件】,...
-    警察白書形式: 都道府県,罪種,認知件数,...（ヘッダーを自動判別）
+    [自動判別A] NPA月次統計 (r08_1-1.csv 等):
+        第3表: 刑法犯総数 都道府県別
+        第6表: 重要犯罪・重要窃盗犯 都道府県別（罪種別）
+    [自動判別B] e-Stat 第6表: 日付,地方,area_code,都道府県,...,罪種,認知件数,...
+    [自動判別C] e-Stat 第3表: 都道府県,認知件数【件】,検挙件数【件】,...
 """
 import sys
 import csv
@@ -309,13 +311,145 @@ def _insert(records: list[dict], dry_run: bool) -> tuple[int, int]:
     return inserted, skipped
 
 
+# ── NPA月次統計フォーマット（第X表形式）パーサー ─────────────────────────────
+
+def _read_npa_csv(path: Path) -> list[list[str]]:
+    """NPA月次統計CSVを読む（Shift-JIS、csv.readerで複数行セルも正しく処理）"""
+    for enc in ("shift-jis", "cp932", "utf-8-sig", "utf-8"):
+        try:
+            with open(path, encoding=enc, newline="", errors="replace") as f:
+                return list(csv.reader(f))
+        except (UnicodeDecodeError, ValueError):
+            continue
+    raise ValueError(f"文字コードを判別できません: {path}")
+
+
+def _year_from_reiwa_filename(filename: str) -> int | None:
+    """ファイル名 r08_... から西暦を推定（令和n年 = 2018+n）"""
+    import re
+    m = re.match(r"[rR](\d+)_", Path(filename).name)
+    return 2018 + int(m.group(1)) if m else None
+
+
+def _pref_from_row(col0: str, col1: str) -> str | None:
+    """第3表/第6表の行から都道府県名を返す。スキップ行はNone"""
+    c0, c1 = col0.strip(), col1.strip()
+    if c0 == "北海道" and c1 == "計":
+        return "北海道"
+    if c0 == "東京都" and not c1:
+        return "東京都"
+    if c1.endswith(("府", "県")):
+        return c1
+    return None
+
+
+def _parse_npa_table_section(rows: list[list[str]], start: int, end: int,
+                              year: int, crime_category: str) -> list[dict]:
+    """第3表/第6表の1セクションを解析してrecordリストを返す"""
+    # データ行: col[0]が都道府県または地方名、col[2]が認知件数（当年）
+    records = []
+    for row in rows[start:end]:
+        if len(row) < 11:
+            continue
+        pref = _pref_from_row(row[0], row[1])
+        if not pref:
+            continue
+        try:
+            recognized = _parse_int(row[2])
+            cleared    = _parse_int(row[6])
+            arrested   = _parse_int(row[10])
+        except IndexError:
+            continue
+        if recognized is None:
+            continue
+        records.append(dict(
+            year             = year,
+            prefecture_name  = pref,
+            crime_category   = crime_category,
+            count_recognized = recognized,
+            count_cleared    = cleared,
+            count_arrested   = arrested,
+        ))
+    return records
+
+
+def parse_npa_monthly(path: Path, year: int | None) -> list[dict]:
+    """
+    NPA月次統計CSV（r08_1-1.csv 形式）を解析する。
+    第3表（刑法犯総数）と第6表（重要犯罪別）の都道府県別データを取得。
+    """
+    rows = _read_npa_csv(path)
+
+    # 年をファイル名から推定（--year 未指定時）
+    if year is None:
+        year = _year_from_reiwa_filename(str(path))
+    if year is None:
+        raise ValueError("年を特定できません。--year オプションで指定してください。")
+
+    records = []
+
+    # セクション境界を検出
+    section_starts: list[tuple[int, str]] = []  # (行番号, セクション名)
+    for i, row in enumerate(rows):
+        if not row or not row[0]:
+            continue
+        cell0 = row[0].strip()
+        # 第3表: 刑法犯総数 都道府県別
+        if cell0 == "第３表" or (cell0.startswith("第") and "刑法犯総数" in "".join(row[:6])):
+            section_starts.append((i, "刑法犯総数"))
+        # 第4表: 窃盗犯総数 都道府県別
+        elif cell0 == "第４表" and any("窃盗" in c for c in row[:6]):
+            section_starts.append((i, "窃盗犯"))
+        # 第6表: 重要犯罪 各罪種（括弧内の犯罪名を抽出）
+        elif cell0 == "第６表":
+            header_text = "".join(row)
+            import re
+            m = re.search(r"[（(]([^）)]+)[）)]", header_text)
+            if m:
+                crime_name = m.group(1).strip()
+                # "総数" や "住宅対象" などの集計行は除外
+                if crime_name not in ("重要犯罪総数", "重要窃盗犯総数",
+                                       "侵入盗−住宅対象", "侵入盗−その他"):
+                    section_starts.append((i, crime_name))
+
+    if not section_starts:
+        raise ValueError("第3表・第6表のセクションが見つかりませんでした。")
+
+    # 各セクションを解析
+    for idx, (start_row, crime_cat) in enumerate(section_starts):
+        # 次セクションの直前まで、または末尾まで
+        end_row = section_starts[idx + 1][0] if idx + 1 < len(section_starts) else len(rows)
+        # ヘッダー行をスキップ（データ行: col[2]が数値になる行まで読み飛ばす）
+        data_start = start_row + 1
+        for j in range(start_row + 1, min(start_row + 15, end_row)):
+            if len(rows[j]) > 2 and _parse_int(rows[j][2]) is not None:
+                data_start = j
+                break
+        recs = _parse_npa_table_section(rows, data_start, end_row, year, crime_cat)
+        records.extend(recs)
+        print(f"      {crime_cat}: {len(recs)} 件")
+
+    return records
+
+
+def _is_npa_monthly_format(path: Path) -> bool:
+    """ファイルの先頭を見てNPA月次統計フォーマットか判定"""
+    for enc in ("shift-jis", "cp932", "utf-8-sig", "utf-8"):
+        try:
+            first = path.read_text(encoding=enc, errors="replace")[:200]
+            return "第１表" in first or "第1表" in first
+        except Exception:
+            continue
+    return False
+
+
 # ── エントリポイント ──────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="警察庁 e-Stat CSV インポート")
+    parser = argparse.ArgumentParser(description="警察庁 CSV インポート（e-Stat / NPA月次統計 対応）")
     parser.add_argument("csv_file", help="インポートする CSV ファイルのパス")
     parser.add_argument("--year", type=int, default=None,
-                        help="CSV に年列がない場合の年（例: 2023）")
+                        help="CSV に年列がない場合の年（例: 2026）")
     parser.add_argument("--dry-run", action="store_true",
                         help="DB への書き込みをせず件数だけ表示")
     args = parser.parse_args()
@@ -325,24 +459,34 @@ def main():
         print(f"エラー: ファイルが見つかりません: {path}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"[1/3] CSV 読み込み中: {path}")
-    headers, rows = _read_csv(path)
-    print(f"      ヘッダー: {headers}")
-    print(f"      データ行数: {len(rows)}")
+    # ── フォーマット自動判別 ──────────────────────────────────────────────────
+    if _is_npa_monthly_format(path):
+        print(f"[フォーマット] NPA月次統計（第X表形式）を検出")
+        print(f"[1/3] CSV 解析中: {path}")
+        try:
+            records = parse_npa_monthly(path, args.year)
+        except ValueError as e:
+            print(f"エラー: {e}", file=sys.stderr)
+            sys.exit(1)
+    else:
+        print(f"[フォーマット] e-Stat形式を検出")
+        print(f"[1/3] CSV 読み込み中: {path}")
+        headers, rows = _read_csv(path)
+        print(f"      ヘッダー: {headers}")
+        print(f"      データ行数: {len(rows)}")
+        print("[2/3] パース中...")
+        try:
+            records = parse_rows(headers, rows, args.year)
+        except ValueError as e:
+            print(f"エラー: {e}", file=sys.stderr)
+            sys.exit(1)
 
-    print("[2/3] パース中...")
-    try:
-        records = parse_rows(headers, rows, args.year)
-    except ValueError as e:
-        print(f"エラー: {e}", file=sys.stderr)
-        sys.exit(1)
     print(f"      解析レコード数: {len(records)}")
 
     if not records:
         print("取り込み対象レコードがありません。")
         return
 
-    # サンプル表示
     print("      サンプル (最初の3件):")
     for r in records[:3]:
         print(f"        {r}")
