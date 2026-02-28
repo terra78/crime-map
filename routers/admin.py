@@ -1,4 +1,5 @@
 import os
+import re
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Header
 from sqlalchemy.orm import Session
@@ -28,6 +29,7 @@ def get_queue(db: Session = Depends(get_db)):
             "title":       r.title,
             "description": r.description,
             "source_url":  r.source_url,
+            "archive_url": r.archive_url,
             "ai_score":    r.ai_score,
             "ai_reason":   r.ai_reason,
             "data":        r.data,
@@ -62,10 +64,10 @@ def reject(report_id: int, db: Session = Depends(get_db)):
     return {"status": "rejected"}
 
 
-# ── 統計 ──────────────────────────────────────────────────────────────────────
+# ── 統計（サマリー） ──────────────────────────────────────────────────────────
 @router.get("/stats", dependencies=[Depends(verify_admin)])
 def stats(db: Session = Depends(get_db)):
-    from sqlalchemy import func, text
+    from sqlalchemy import func
     total    = db.query(func.count(Report.id)).scalar()
     approved = db.query(func.count(Report.id)).filter(
         Report.status.in_(["ai_approved", "human_approved"])).scalar()
@@ -75,3 +77,39 @@ def stats(db: Session = Depends(get_db)):
         "total": total, "approved": approved,
         "pending": pending, "rejected": rejected,
     }
+
+
+# ── 月別統計（発生日基準） ────────────────────────────────────────────────────
+@router.get("/stats/monthly", dependencies=[Depends(verify_admin)])
+def stats_monthly(db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    rows = db.execute(text("""
+        SELECT TO_CHAR(occurred_at, 'YYYY-MM') AS month, COUNT(*) AS cnt
+        FROM reports
+        WHERE status IN ('ai_approved', 'human_approved')
+          AND occurred_at IS NOT NULL
+        GROUP BY 1
+        ORDER BY 1 DESC
+        LIMIT 12
+    """)).fetchall()
+    return [{"month": r[0], "count": r[1]} for r in rows]
+
+
+# ── dataフィールド別集計 ───────────────────────────────────────────────────────
+@router.get("/stats/breakdown/{field}", dependencies=[Depends(verify_admin)])
+def stats_breakdown(field: str, db: Session = Depends(get_db)):
+    # フィールド名は英数字+アンダースコアのみ許可（SQLインジェクション対策）
+    if not re.match(r'^[a-zA-Z0-9_]+$', field):
+        raise HTTPException(400, "Invalid field name")
+    from sqlalchemy import text
+    rows = db.execute(text(f"""
+        SELECT data->>'{field}' AS value, COUNT(*) AS cnt
+        FROM reports
+        WHERE status IN ('ai_approved', 'human_approved')
+          AND data->>'{field}' IS NOT NULL
+          AND data->>'{field}' <> ''
+        GROUP BY 1
+        ORDER BY 2 DESC
+        LIMIT 30
+    """)).fetchall()
+    return [{"value": r[0], "count": r[1]} for r in rows]
