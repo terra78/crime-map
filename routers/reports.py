@@ -224,7 +224,8 @@ def update_report(
     if body.lat is not None and body.lng is not None:
         r.location = f"SRID=4326;POINT({body.lng} {body.lat})"
 
-    # ステータスはそのまま維持（地図表示を維持するため）
+    # 編集後は再審査へ
+    r.status = "pending"
 
     db.commit()
     db.refresh(r)
