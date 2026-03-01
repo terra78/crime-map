@@ -135,6 +135,8 @@ def get_my_reports(
             "data":        r.data,
             "source_url":  r.source_url,
             "created_at":  str(r.created_at),
+            "lat": db.execute(text(f"SELECT ST_Y('{r.location}'::geometry)")).scalar(),
+            "lng": db.execute(text(f"SELECT ST_X('{r.location}'::geometry)")).scalar(),
         }
         for r in reports
     ]
@@ -196,6 +198,8 @@ class ReportUpdate(BaseModel):
     occurred_at:      Optional[date] = None
     source_url:       Optional[str] = None
     data:             Optional[dict] = None
+    lat:              Optional[float] = None
+    lng:              Optional[float] = None
 
 
 @router.patch("/{report_id}")
@@ -217,10 +221,10 @@ def update_report(
     if body.occurred_at is not None: r.occurred_at = body.occurred_at
     if body.source_url  is not None: r.source_url  = body.source_url
     if body.data        is not None: r.data        = body.data
+    if body.lat is not None and body.lng is not None:
+        r.location = f"SRID=4326;POINT({body.lng} {body.lat})"
 
-    # 編集後は再審査へ
-    if r.status in ("ai_approved", "human_approved"):
-        r.status = "pending"
+    # ステータスはそのまま維持（地図表示を維持するため）
 
     db.commit()
     db.refresh(r)
