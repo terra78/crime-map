@@ -9,3 +9,4 @@ anthropic
 httpx
 pydantic
 reportlab
+PyJWT[crypto]

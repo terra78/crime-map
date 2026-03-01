@@ -9,6 +9,7 @@ from database import get_db
 from models import Report, SiteType, ModerationLog
 from ai_verify import verify_report
 from archive import needs_archive, save_to_archive
+from auth import get_current_user_optional, get_current_user_required
 
 router = APIRouter(prefix="/api/reports", tags=["reports"])
 
@@ -26,6 +27,18 @@ class ReportCreate(BaseModel):
     source_url:   Optional[str] = None
 
 
+def _submitted_by(request: Request, user_id: str | None) -> str:
+    """
+    投稿者識別子を返す。
+    - Clerk ログイン済み → Clerk user_id ("user_xxxx")
+    - 未ログイン → クライアント IP の SHA256 先頭16文字
+    """
+    if user_id:
+        return user_id
+    ip = (request.client.host if request.client else "unknown")
+    return hashlib.sha256(ip.encode()).hexdigest()[:16]
+
+
 # ── 投稿 ──────────────────────────────────────────────────────────────────────
 @router.post("")
 async def create_report(
@@ -33,11 +46,8 @@ async def create_report(
     request: Request,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
+    user_id: str | None = Depends(get_current_user_optional),  # 任意認証
 ):
-    # 投稿者IPをハッシュ化
-    ip = request.client.host
-    ip_hash = hashlib.sha256(ip.encode()).hexdigest()[:16]
-
     report = Report(
         site_type_id = body.site_type_id,
         title        = body.title,
@@ -48,7 +58,7 @@ async def create_report(
         data         = body.data,
         source_url   = body.source_url,
         status       = "pending",
-        submitted_by = ip_hash,
+        submitted_by = _submitted_by(request, user_id),
     )
     db.add(report)
     db.commit()
@@ -96,6 +106,38 @@ async def run_ai_verify(report_id: int, db: Session):
                         actor="ai", reason=f"score={score:.2f}: {reason}")
     db.add(log)
     db.commit()
+
+
+# ── 自分の投稿一覧（Clerk 認証必須）────────────────────────────────────────────
+@router.get("/me")
+def get_my_reports(
+    db: Session = Depends(get_db),
+    user_id: str = Depends(get_current_user_required),
+):
+    """
+    ログインユーザー自身の投稿一覧を返す。
+    submitted_by が Clerk user_id と一致するものを返す。
+    """
+    reports = (
+        db.query(Report)
+        .filter(Report.submitted_by == user_id)
+        .order_by(Report.created_at.desc())
+        .all()
+    )
+    return [
+        {
+            "id":          r.id,
+            "title":       r.title,
+            "description": r.description,
+            "address":     r.address,
+            "occurred_at": str(r.occurred_at) if r.occurred_at else None,
+            "status":      r.status,
+            "data":        r.data,
+            "source_url":  r.source_url,
+            "created_at":  str(r.created_at),
+        }
+        for r in reports
+    ]
 
 
 # ── 地図表示用一覧取得 ────────────────────────────────────────────────────────
