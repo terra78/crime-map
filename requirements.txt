@@ -10,3 +10,5 @@ httpx
 pydantic
 reportlab
 PyJWT[crypto]
+svix
+resend
