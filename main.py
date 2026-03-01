@@ -9,6 +9,10 @@ from pathlib import Path
 from routers import reports, admin, admin_ui, site_types, prefecture_stats, webhooks
 
 # ── バッチジョブ ──────────────────────────────────────────────────────────────
+async def job_crawler():
+    from news_crawler import run_news_crawler
+    await run_news_crawler()
+
 def job_monthly():
     from batch_report import generate_pdf_monthly, generate_csv_monthly
     now   = datetime.now()
@@ -29,6 +33,8 @@ def job_yearly():
 scheduler = AsyncIOScheduler(timezone="Asia/Tokyo")
 scheduler.add_job(job_monthly, CronTrigger(day=1,   hour=6,  minute=0), id="monthly")
 scheduler.add_job(job_yearly,  CronTrigger(month=1, day=5, hour=7, minute=0), id="yearly")
+scheduler.add_job(job_crawler, "interval", hours=6, id="crawler",
+                  next_run_time=datetime.now())  # 起動直後に1回実行
 
 # ── アプリ起動/終了 ───────────────────────────────────────────────────────────
 @asynccontextmanager

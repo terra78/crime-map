@@ -12,3 +12,6 @@ reportlab
 PyJWT[crypto]
 svix
 resend
+feedparser
+beautifulsoup4
+lxml
