@@ -186,3 +186,60 @@ def get_report(report_id: int, db: Session = Depends(get_db)):
     if not r:
         return {"error": "not found"}, 404
     return r
+
+
+# ── 編集（投稿者本人のみ）────────────────────────────────────────────────────
+class ReportUpdate(BaseModel):
+    title:            Optional[str] = None
+    description:      Optional[str] = None
+    address:          Optional[str] = None
+    occurred_at:      Optional[date] = None
+    source_url:       Optional[str] = None
+    data:             Optional[dict] = None
+
+
+@router.patch("/{report_id}")
+def update_report(
+    report_id: int,
+    body: ReportUpdate,
+    db: Session = Depends(get_db),
+    user_id: str = Depends(get_current_user_required),
+):
+    r = db.query(Report).filter(Report.id == report_id).first()
+    if not r:
+        raise HTTPException(status_code=404, detail="not found")
+    if r.submitted_by != user_id:
+        raise HTTPException(status_code=403, detail="forbidden")
+
+    if body.title       is not None: r.title       = body.title
+    if body.description is not None: r.description = body.description
+    if body.address     is not None: r.address     = body.address
+    if body.occurred_at is not None: r.occurred_at = body.occurred_at
+    if body.source_url  is not None: r.source_url  = body.source_url
+    if body.data        is not None: r.data        = body.data
+
+    # 編集後は再審査へ
+    if r.status in ("ai_approved", "human_approved"):
+        r.status = "pending"
+
+    db.commit()
+    db.refresh(r)
+    return {"id": r.id, "status": r.status}
+
+
+# ── 削除（投稿者本人のみ）────────────────────────────────────────────────────
+@router.delete("/{report_id}")
+def delete_report(
+    report_id: int,
+    db: Session = Depends(get_db),
+    user_id: str = Depends(get_current_user_required),
+):
+    r = db.query(Report).filter(Report.id == report_id).first()
+    if not r:
+        raise HTTPException(status_code=404, detail="not found")
+    if r.submitted_by != user_id:
+        raise HTTPException(status_code=403, detail="forbidden")
+
+    db.delete(r)
+    db.commit()
+    return {"deleted": report_id}
