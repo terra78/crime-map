@@ -1,10 +1,15 @@
 import os
 import re
+import asyncio
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, Header
+from fastapi import APIRouter, Depends, HTTPException, Header, BackgroundTasks
 from sqlalchemy.orm import Session
 from database import get_db
 from models import Report, ModerationLog
+
+# バックフィルの実行状態を追跡
+_backfill_task: asyncio.Task | None = None
+_backfill_started_at: datetime | None = None
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -93,6 +98,68 @@ def stats_monthly(db: Session = Depends(get_db)):
         LIMIT 12
     """)).fetchall()
     return [{"month": r[0], "count": r[1]} for r in rows]
+
+
+# ── バックフィル（過去記事一括取得）────────────────────────────────────────────
+
+@router.post("/backfill", dependencies=[Depends(verify_admin)])
+async def trigger_backfill(months: int = 1, from_date: str | None = None):
+    """
+    過去記事バックフィルを非同期バックグラウンドで開始する。
+    SSH不要。Renderのログで進捗確認できる。
+
+    - months: さかのぼる月数（デフォルト1）
+    - from_date: 開始日 YYYY-MM-DD（指定した場合 months より優先）
+    """
+    global _backfill_task, _backfill_started_at
+
+    if _backfill_task and not _backfill_task.done():
+        elapsed = (datetime.now() - _backfill_started_at).seconds // 60
+        return {
+            "status": "already_running",
+            "message": f"バックフィルはすでに実行中です（{elapsed}分経過）",
+        }
+
+    from backfill_crawler import run_backfill
+    from datetime import date
+
+    parsed_from = None
+    if from_date:
+        try:
+            parsed_from = date.fromisoformat(from_date)
+        except ValueError:
+            raise HTTPException(400, f"from_date の形式が不正です（YYYY-MM-DD）: {from_date}")
+
+    _backfill_started_at = datetime.now()
+    _backfill_task = asyncio.create_task(
+        run_backfill(months=months, from_date=parsed_from)
+    )
+
+    return {
+        "status":  "started",
+        "message": f"バックフィル開始（過去{months}ヶ月分）。Renderのログで進捗を確認してください。",
+        "months":  months,
+        "from_date": str(parsed_from) if parsed_from else None,
+    }
+
+
+@router.get("/backfill/status", dependencies=[Depends(verify_admin)])
+async def backfill_status():
+    """バックフィルの実行状態を返す"""
+    global _backfill_task, _backfill_started_at
+
+    if _backfill_task is None:
+        return {"status": "not_started"}
+
+    if _backfill_task.done():
+        exc = _backfill_task.exception()
+        if exc:
+            return {"status": "error", "error": str(exc)}
+        elapsed = (datetime.now() - _backfill_started_at).seconds // 60
+        return {"status": "completed", "elapsed_minutes": elapsed}
+
+    elapsed = (datetime.now() - _backfill_started_at).seconds // 60
+    return {"status": "running", "elapsed_minutes": elapsed}
 
 
 # ── dataフィールド別集計 ───────────────────────────────────────────────────────
