@@ -173,8 +173,8 @@ async def run_backfill(
                         print(f"    [ERROR] {entry.get('title', '')[:40]}: {e}")
                         total_skipped += 1
 
-                    # Nominatim 利用規約: 1秒以上のインターバル
-                    await asyncio.sleep(1.5)
+                    # geocode() 内でレート制限を管理しているため短めに待機
+                    await asyncio.sleep(0.3)
 
                 # Google News への連続アクセスを避けるため少し待機
                 await asyncio.sleep(3)
