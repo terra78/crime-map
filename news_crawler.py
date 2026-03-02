@@ -37,13 +37,70 @@ load_dotenv()
 
 # RSSフィード一覧
 RSS_FEEDS = [
+    # ── NHK ──
     {
-        "name": "NHK社会・事件",
+        "name": "NHK 社会・事件",
         "url": "https://www.nhk.or.jp/rss/news/cat3.xml",
     },
+    # ── Yahoo! Japan ──
     {
         "name": "Yahoo!ニュース 国内",
         "url": "https://news.yahoo.co.jp/rss/categories/domestic.xml",
+    },
+    {
+        "name": "Yahoo!ニュース 事件・事故",
+        "url": "https://news.yahoo.co.jp/rss/categories/incident.xml",
+    },
+    # ── livedoor ──
+    {
+        "name": "livedoor NEWS 国内",
+        "url": "https://news.livedoor.com/topics/rss/dom.xml",
+    },
+    # ── Google News（地方紙含む全国記事を横断収集）──
+    # Google News RSS は国内の地方紙・ブロック紙も含む数百媒体をカバーする
+    {
+        "name": "Google News: 逮捕・摘発",
+        "url": "https://news.google.com/rss/search?q=%E9%80%AE%E6%8D%95+%E6%91%98%E7%99%BA&hl=ja&gl=JP&ceid=JP:ja",
+    },
+    {
+        "name": "Google News: 殺人・強盗・放火",
+        "url": "https://news.google.com/rss/search?q=%E6%AE%BA%E4%BA%BA+%E5%BC%B7%E7%9B%97+%E6%94%BE%E7%81%AB&hl=ja&gl=JP&ceid=JP:ja",
+    },
+    {
+        "name": "Google News: 窃盗・空き巣",
+        "url": "https://news.google.com/rss/search?q=%E7%AA%83%E7%9B%97+%E7%A9%BA%E3%81%8D%E5%B7%A3&hl=ja&gl=JP&ceid=JP:ja",
+    },
+    {
+        "name": "Google News: 詐欺・特殊詐欺",
+        "url": "https://news.google.com/rss/search?q=%E8%A9%90%E6%AC%BA+%E7%89%B9%E6%AE%8A%E8%A9%90%E6%AC%BA&hl=ja&gl=JP&ceid=JP:ja",
+    },
+    {
+        "name": "Google News: 覚醒剤・薬物",
+        "url": "https://news.google.com/rss/search?q=%E8%A6%9A%E9%86%92%E5%89%A4+%E8%96%AC%E7%89%A9&hl=ja&gl=JP&ceid=JP:ja",
+    },
+    {
+        "name": "Google News: 性犯罪・わいせつ",
+        "url": "https://news.google.com/rss/search?q=%E6%80%A7%E7%8A%AF%E7%BD%AA+%E3%82%8F%E3%81%84%E3%81%9B%E3%81%A4&hl=ja&gl=JP&ceid=JP:ja",
+    },
+    {
+        "name": "Google News: DV・ストーカー・虐待",
+        "url": "https://news.google.com/rss/search?q=DV+%E3%82%B9%E3%83%88%E3%83%BC%E3%82%AB%E3%83%BC+%E8%99%90%E5%BE%85&hl=ja&gl=JP&ceid=JP:ja",
+    },
+    {
+        "name": "Google News: 不法滞在・入管",
+        "url": "https://news.google.com/rss/search?q=%E4%B8%8D%E6%B3%95%E6%BB%9E%E5%9C%A8+%E5%85%A5%E7%AE%A1&hl=ja&gl=JP&ceid=JP:ja",
+    },
+    {
+        "name": "Google News: サイバー犯罪",
+        "url": "https://news.google.com/rss/search?q=%E3%82%B5%E3%82%A4%E3%83%90%E3%83%BC%E7%8A%AF%E7%BD%AA+%E4%B8%8D%E6%AD%A3%E3%82%A2%E3%82%AF%E3%82%BB%E3%82%B9&hl=ja&gl=JP&ceid=JP:ja",
+    },
+    {
+        "name": "Google News: 組織犯罪・暴力団",
+        "url": "https://news.google.com/rss/search?q=%E7%B5%84%E7%B9%94%E7%8A%AF%E7%BD%AA+%E6%9A%B4%E5%8A%9B%E5%9B%A3&hl=ja&gl=JP&ceid=JP:ja",
+    },
+    {
+        "name": "Google News: 送検・起訴",
+        "url": "https://news.google.com/rss/search?q=%E9%80%81%E6%A4%9C+%E8%B5%B7%E8%A8%B4&hl=ja&gl=JP&ceid=JP:ja",
     },
 ]
 
@@ -97,8 +154,12 @@ async def fetch_rss(url: str) -> list[dict]:
 
 # ── 記事本文スクレイピング ─────────────────────────────────────────────────────
 
-async def fetch_article(url: str) -> str:
-    """記事本文をスクレイピングして返す（最大3000文字）"""
+async def fetch_article(url: str) -> tuple[str, str]:
+    """
+    記事本文をスクレイピングして返す（最大3000文字）。
+    Google News などのリダイレクト URL は最終 URL を返す。
+    戻り値: (本文テキスト, 最終URL)
+    """
     try:
         async with httpx.AsyncClient(timeout=15, follow_redirects=True) as http:
             r = await http.get(
@@ -106,15 +167,16 @@ async def fetch_article(url: str) -> str:
                 headers={"User-Agent": "Mozilla/5.0 (compatible; CrimeMapBot/1.0)"},
             )
             r.raise_for_status()
+            final_url = str(r.url)  # リダイレクト後の実際の URL
         soup = BeautifulSoup(r.text, "lxml")
         # ナビ・広告・スクリプト等を除去
         for tag in soup(["nav", "header", "footer", "script", "style", "aside",
                           "noscript", "iframe", "form"]):
             tag.decompose()
         text = soup.get_text(separator="\n", strip=True)
-        return text[:3000]
+        return text[:3000], final_url
     except Exception as e:
-        return f"取得失敗: {e}"
+        return f"取得失敗: {e}", url
 
 
 # ── フィルタリング ────────────────────────────────────────────────────────────
@@ -228,16 +290,16 @@ async def process_entry(entry: dict, site_type_id: int, db: Session) -> bool:
     if not url:
         return False
 
-    # 重複チェック（source_url）
-    if source_url_exists(db, url):
-        return False
-
-    # キーワードフィルタ（高速スクリーニング）
+    # キーワードフィルタ（高速スクリーニング ─ 本文取得前に弾く）
     if not is_crime_related(entry["title"], entry.get("summary", "")):
         return False
 
-    # 記事本文取得
-    article_text = await fetch_article(url)
+    # 記事本文取得（Google News リダイレクトも解決して final_url を取得）
+    article_text, final_url = await fetch_article(url)
+
+    # 重複チェック（リダイレクト解決後の URL で判定）
+    if source_url_exists(db, final_url):
+        return False
 
     # AI構造化情報抽出
     info = await extract_info(article_text, entry["title"])
@@ -284,7 +346,7 @@ async def process_entry(entry: dict, site_type_id: int, db: Session) -> bool:
             "crime_law":        crime_law,
             "nationality_type": info.get("nationality_type", "不明"),
         },
-        source_url   = url,
+        source_url   = final_url,
         status       = "pending",
         submitted_by = "bot",
     )
@@ -322,7 +384,7 @@ async def run_news_crawler():
         posted = 0
         skipped = 0
 
-        for feed_conf in RSS_FEEDS:
+        for i, feed_conf in enumerate(RSS_FEEDS):
             print(f"[Crawler] RSS取得: {feed_conf['name']}")
             entries = await fetch_rss(feed_conf["url"])
             print(f"[Crawler] {len(entries)} 件取得")
@@ -340,6 +402,10 @@ async def run_news_crawler():
 
                 # Nominatim 利用規約: 1秒以上のインターバル
                 await asyncio.sleep(1.5)
+
+            # Google News への連続アクセスを避けるため RSS 間に少し待機
+            if "news.google.com" in feed_conf["url"]:
+                await asyncio.sleep(3)
 
         print(f"[Crawler] 完了: 投稿={posted}件 / スキップ={skipped}件")
 
