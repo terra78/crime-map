@@ -61,19 +61,7 @@ def approve(report_id: int, db: Session = Depends(get_db)):
     return {"status": "approved"}
 
 
-# ── 却下 ──────────────────────────────────────────────────────────────────────
-@router.post("/reject/{report_id}", dependencies=[Depends(verify_admin)])
-def reject(report_id: int, db: Session = Depends(get_db)):
-    r = db.query(Report).filter(Report.id == report_id).first()
-    if not r:
-        raise HTTPException(404, "not found")
-    r.status = "rejected"
-    db.add(ModerationLog(report_id=report_id, action="human_reject", actor="admin"))
-    db.commit()
-    return {"status": "rejected"}
-
-
-# ── EXCLUDE_KEYWORDS 一括却下 ─────────────────────────────────────────────────
+# ── EXCLUDE_KEYWORDS 一括却下（※ /reject/{id} より前に定義する必要あり）────────
 @router.post("/reject/exclude-keywords", dependencies=[Depends(verify_admin)])
 def reject_by_exclude_keywords(db: Session = Depends(get_db)):
     """
@@ -105,6 +93,18 @@ def reject_by_exclude_keywords(db: Session = Depends(get_db)):
         "status":         "done",
         "rejected_count": len(rejected_ids),
     }
+
+
+# ── 却下 ──────────────────────────────────────────────────────────────────────
+@router.post("/reject/{report_id}", dependencies=[Depends(verify_admin)])
+def reject(report_id: int, db: Session = Depends(get_db)):
+    r = db.query(Report).filter(Report.id == report_id).first()
+    if not r:
+        raise HTTPException(404, "not found")
+    r.status = "rejected"
+    db.add(ModerationLog(report_id=report_id, action="human_reject", actor="admin"))
+    db.commit()
+    return {"status": "rejected"}
 
 
 # ── 統計（サマリー） ──────────────────────────────────────────────────────────
