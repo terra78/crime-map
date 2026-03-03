@@ -3,11 +3,12 @@ import re
 import asyncio
 from datetime import datetime
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Header, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, Header, Request, BackgroundTasks
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from database import get_db
-from models import Report, ModerationLog
+from models import Report, ModerationLog, Admin
+from auth import get_current_user_optional
 
 # バックフィルの実行状態を追跡
 _backfill_task: asyncio.Task | None = None
@@ -23,6 +24,82 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 def verify_admin(x_admin_token: str = Header(...)):
     if x_admin_token != os.getenv("ADMIN_TOKEN"):
         raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+# ── Clerk JWT で管理者認証 → ADMIN_TOKEN を返す ─────────────────────────────
+
+@router.post("/clerk-login")
+async def clerk_login(request: Request, db: Session = Depends(get_db)):
+    """
+    Clerk JWT で認証し ADMIN_TOKEN を返す。
+    - 初回: JWT の sub (Clerk user_id) を admins.clerk_user_id に登録（自己セットアップ）
+    - 2回目以降: clerk_user_id が一致すれば ADMIN_TOKEN を返す
+    """
+    user_id = await get_current_user_optional(request)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Clerk JWT が必要です")
+
+    admin = db.query(Admin).first()
+    if not admin:
+        raise HTTPException(status_code=404, detail="管理者が設定されていません")
+
+    if admin.clerk_user_id is None:
+        # 初回: このユーザーを管理者として登録
+        admin.clerk_user_id = user_id
+        db.commit()
+        print(f"[Admin] Clerk user_id を登録: {user_id}")
+    elif admin.clerk_user_id != user_id:
+        raise HTTPException(status_code=403, detail="管理者権限がありません")
+
+    return {
+        "admin_token": os.getenv("ADMIN_TOKEN", ""),
+        "email": admin.email,
+    }
+
+
+# ── 管理者プロフィール ─────────────────────────────────────────────────────────
+
+class AdminProfileUpdate(BaseModel):
+    email: Optional[str] = None
+
+
+@router.get("/profile", dependencies=[Depends(verify_admin)])
+def get_profile(db: Session = Depends(get_db)):
+    admin = db.query(Admin).first()
+    if not admin:
+        raise HTTPException(404, "管理者アカウントが見つかりません")
+    return {"id": admin.id, "email": admin.email, "created_at": str(admin.created_at)}
+
+
+@router.patch("/profile", dependencies=[Depends(verify_admin)])
+def update_profile(body: AdminProfileUpdate, db: Session = Depends(get_db)):
+    admin = db.query(Admin).first()
+    if not admin:
+        raise HTTPException(404, "管理者アカウントが見つかりません")
+    if body.email is not None:
+        admin.email = body.email
+    db.commit()
+    return {"id": admin.id, "email": admin.email}
+
+
+# ── 投稿物理削除（管理者専用・子テーブルをカスケード削除） ─────────────────────
+
+@router.delete("/reports/{report_id}", dependencies=[Depends(verify_admin)])
+def admin_delete_report(report_id: int, db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    r = db.query(Report).filter(Report.id == report_id).first()
+    if not r:
+        raise HTTPException(404, "not found")
+    # 1. コメントの自己参照FK(parent_id)を先にNULL化
+    db.execute(text("UPDATE comments SET parent_id = NULL WHERE report_id = :rid"), {"rid": report_id})
+    # 2. コメント削除
+    db.execute(text("DELETE FROM comments WHERE report_id = :rid"), {"rid": report_id})
+    # 3. モデレーションログ削除
+    db.execute(text("DELETE FROM moderation_log WHERE report_id = :rid"), {"rid": report_id})
+    # 4. 投稿本体削除
+    db.execute(text("DELETE FROM reports WHERE id = :rid"), {"rid": report_id})
+    db.commit()
+    return {"status": "deleted", "id": report_id}
 
 
 # ── 承認待ちキュー ────────────────────────────────────────────────────────────

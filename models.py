@@ -63,3 +63,28 @@ class ModerationLog(Base):
     actor      = Column(String(128))
     reason     = Column(Text)
     created_at = Column(DateTime, server_default=func.now())
+
+
+class Admin(Base):
+    """管理者アカウント（メールアドレスで管理）"""
+    __tablename__ = "admins"
+
+    id            = Column(Integer, primary_key=True)
+    email         = Column(String(255), unique=True, nullable=False)
+    clerk_user_id = Column(String(256), nullable=True)   # Clerk の sub クレーム
+    created_at    = Column(DateTime, server_default=func.now())
+    updated_at    = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class Comment(Base):
+    """記事へのコメント・返信"""
+    __tablename__ = "comments"
+
+    id          = Column(Integer, primary_key=True)
+    report_id   = Column(Integer, ForeignKey("reports.id"), nullable=False)
+    user_id     = Column(String(256), nullable=False)
+    user_name   = Column(String(256))
+    user_avatar = Column(String(1024))
+    content     = Column(Text, nullable=False)
+    parent_id   = Column(Integer, ForeignKey("comments.id"), nullable=True)
+    created_at  = Column(DateTime, server_default=func.now())
