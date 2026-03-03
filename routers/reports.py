@@ -248,6 +248,7 @@ def list_reports(
             "lng":          db.execute(text(f"SELECT ST_X('{r.location}'::geometry)")).scalar(),
             "address":      r.address,
             "occurred_at":  str(r.occurred_at) if r.occurred_at else None,
+            "created_at":   str(r.created_at) if r.created_at else None,
             "data":         r.data,
             "site_type_id": r.site_type_id,
             "source_url":   r.source_url,
