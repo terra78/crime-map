@@ -1,10 +1,13 @@
 import hashlib
+import re
+import httpx
 from datetime import date
 from typing import Optional
 from fastapi import APIRouter, Depends, Request, BackgroundTasks
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from pydantic import BaseModel
+from bs4 import BeautifulSoup
 from database import get_db
 from models import Report, SiteType, ModerationLog
 from ai_verify import verify_report
@@ -15,6 +18,11 @@ router = APIRouter(prefix="/api/reports", tags=["reports"])
 
 
 # ── スキーマ ──────────────────────────────────────────────────────────────────
+
+class ExtractRequest(BaseModel):
+    url: str
+
+
 class ReportCreate(BaseModel):
     site_type_id: int
     title:        Optional[str] = None
@@ -37,6 +45,72 @@ def _submitted_by(request: Request, user_id: str | None) -> str:
         return user_id
     ip = (request.client.host if request.client else "unknown")
     return hashlib.sha256(ip.encode()).hexdigest()[:16]
+
+
+# ── URLから情報抽出（投稿フォームのソース貼り付けモード用）────────────────────
+@router.post("/extract")
+async def extract_from_url(body: ExtractRequest):
+    """
+    URLから記事を取得してAIで構造化情報を抽出する（DBには保存しない）。
+    ユーザー投稿フォームの「ソースURLから自動入力」機能用。
+    """
+    from news_crawler import extract_info, geocode
+
+    url = body.url.strip()
+    if not url.startswith(("http://", "https://")):
+        return {"error": "有効なURL（http/https）を入力してください"}
+
+    # 記事取得
+    try:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as http:
+            r = await http.get(
+                url,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; CrimeMapBot/1.0)"},
+            )
+            r.raise_for_status()
+        final_url = str(r.url)
+    except Exception as e:
+        return {"error": f"URLの取得に失敗しました（{type(e).__name__}）"}
+
+    soup = BeautifulSoup(r.text, "lxml")
+
+    # HTML <title> からタイトルを取得（"記事名 | サイト名" → "記事名"）
+    html_title = ""
+    if soup.title:
+        raw = soup.title.get_text(strip=True)
+        html_title = re.split(r'\s*[|｜\-–—]\s*', raw)[0].strip()
+
+    # 本文テキスト抽出
+    for tag in soup(["nav", "header", "footer", "script", "style",
+                     "aside", "noscript", "iframe", "form"]):
+        tag.decompose()
+    article_text = soup.get_text(separator="\n", strip=True)[:3000]
+
+    # AI情報抽出
+    info = await extract_info(article_text, html_title)
+    if not info:
+        return {"error": "AIによる情報抽出に失敗しました。しばらく後で再試行してください"}
+    if info.get("skip"):
+        return {"error": "事件・犯罪関連の記事ではないと判断されました"}
+
+    # ジオコーディング
+    lat, lng = None, None
+    if info.get("address"):
+        coords = await geocode(info["address"])
+        if coords:
+            lat, lng = coords
+
+    return {
+        "title":            info.get("title"),
+        "address":          info.get("address"),
+        "incident_type":    info.get("incident_type"),
+        "nationality_type": info.get("nationality_type"),
+        "occurred_at":      info.get("occurred_at"),
+        "description":      info.get("description"),
+        "lat":              lat,
+        "lng":              lng,
+        "source_url":       final_url,
+    }
 
 
 # ── 投稿 ──────────────────────────────────────────────────────────────────────
@@ -176,6 +250,8 @@ def list_reports(
             "occurred_at": str(r.occurred_at) if r.occurred_at else None,
             "data":        r.data,
             "site_type_id": r.site_type_id,
+            "source_url":  r.source_url,
+            "archive_url": r.archive_url,
         }
         for r in reports
     ]

@@ -11,6 +11,10 @@ from models import Report, ModerationLog
 _backfill_task: asyncio.Task | None = None
 _backfill_started_at: datetime | None = None
 
+# 魚拓バックフィルの実行状態
+_archive_task: asyncio.Task | None = None
+_archive_started_at: datetime | None = None
+
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 
@@ -67,6 +71,40 @@ def reject(report_id: int, db: Session = Depends(get_db)):
     db.add(ModerationLog(report_id=report_id, action="human_reject", actor="admin"))
     db.commit()
     return {"status": "rejected"}
+
+
+# ── EXCLUDE_KEYWORDS 一括却下 ─────────────────────────────────────────────────
+@router.post("/reject/exclude-keywords", dependencies=[Depends(verify_admin)])
+def reject_by_exclude_keywords(db: Session = Depends(get_db)):
+    """
+    news_crawler.py の EXCLUDE_KEYWORDS に一致するタイトルの pending 記事を一括却下する。
+    裁判・考察記事など、フィルター追加前に収集されてしまった記事を遡って処理する。
+    """
+    from news_crawler import EXCLUDE_KEYWORDS
+
+    pending = (
+        db.query(Report)
+        .filter(Report.status == "pending")
+        .all()
+    )
+
+    rejected_ids: list[int] = []
+    for r in pending:
+        if any(kw in (r.title or "") for kw in EXCLUDE_KEYWORDS):
+            r.status = "rejected"
+            db.add(ModerationLog(
+                report_id=r.id,
+                action="auto_reject_exclude_keywords",
+                actor="admin",
+            ))
+            rejected_ids.append(r.id)
+
+    db.commit()
+    print(f"[Admin] EXCLUDE_KEYWORDS 一括却下: {len(rejected_ids)}件")
+    return {
+        "status":         "done",
+        "rejected_count": len(rejected_ids),
+    }
 
 
 # ── 統計（サマリー） ──────────────────────────────────────────────────────────
@@ -159,6 +197,88 @@ async def backfill_status():
         return {"status": "completed", "elapsed_minutes": elapsed}
 
     elapsed = (datetime.now() - _backfill_started_at).seconds // 60
+    return {"status": "running", "elapsed_minutes": elapsed}
+
+
+# ── 魚拓バックフィル ──────────────────────────────────────────────────────────
+
+async def run_archive_backfill(limit: int) -> None:
+    """archive_url 未設定の承認済み記事に魚拓URLをバックグラウンドで付与する"""
+    from archive import needs_archive, save_to_archive
+    from database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        reports = (
+            db.query(Report)
+            .filter(
+                Report.status.in_(["ai_approved", "human_approved"]),
+                Report.source_url.isnot(None),
+                Report.archive_url.is_(None),
+            )
+            .order_by(Report.created_at.desc())
+            .limit(limit)
+            .all()
+        )
+        print(f"[Archive BF] 対象: {len(reports)}件")
+        saved = skipped = failed = 0
+
+        for r in reports:
+            if not needs_archive(r.source_url):
+                skipped += 1
+                continue
+            archive_url = await save_to_archive(r.source_url)
+            if archive_url:
+                r.archive_url = archive_url
+                db.commit()
+                saved += 1
+                print(f"[Archive BF] [{r.id}] OK: {archive_url[:70]}")
+            else:
+                failed += 1
+                print(f"[Archive BF] [{r.id}] 失敗: {r.source_url[:70]}")
+            await asyncio.sleep(5)  # archive.org への負荷対策
+
+        print(f"[Archive BF] 完了: 保存={saved} スキップ={skipped} 失敗={failed}")
+    finally:
+        db.close()
+
+
+@router.post("/archive/backfill", dependencies=[Depends(verify_admin)])
+async def trigger_archive_backfill(limit: int = 100):
+    """
+    archive_url 未設定の承認済み記事に魚拓URLを一括付与する。
+    - limit: 1回あたりの処理件数（デフォルト100）
+    """
+    global _archive_task, _archive_started_at
+
+    if _archive_task and not _archive_task.done():
+        elapsed = (datetime.now() - _archive_started_at).seconds // 60
+        return {"status": "already_running", "message": f"実行中です（{elapsed}分経過）"}
+
+    _archive_started_at = datetime.now()
+    _archive_task = asyncio.create_task(run_archive_backfill(limit=limit))
+
+    return {
+        "status":  "started",
+        "message": f"魚拓バックフィル開始（最大{limit}件）",
+        "limit":   limit,
+    }
+
+
+@router.get("/archive/backfill/status", dependencies=[Depends(verify_admin)])
+async def archive_backfill_status():
+    """魚拓バックフィルの実行状態を返す"""
+    global _archive_task, _archive_started_at
+
+    if _archive_task is None:
+        return {"status": "not_started"}
+    if _archive_task.done():
+        exc = _archive_task.exception()
+        if exc:
+            return {"status": "error", "error": str(exc)}
+        elapsed = (datetime.now() - _archive_started_at).seconds // 60
+        return {"status": "completed", "elapsed_minutes": elapsed}
+    elapsed = (datetime.now() - _archive_started_at).seconds // 60
     return {"status": "running", "elapsed_minutes": elapsed}
 
 
