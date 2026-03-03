@@ -6,7 +6,7 @@ from apscheduler.triggers.cron import CronTrigger
 from datetime import datetime
 from pathlib import Path
 
-from routers import reports, admin, admin_ui, site_types, prefecture_stats, webhooks
+from routers import reports, admin, admin_ui, site_types, prefecture_stats, webhooks, comments, contact
 
 # ── バッチジョブ ──────────────────────────────────────────────────────────────
 async def job_crawler():
@@ -39,6 +39,16 @@ scheduler.add_job(job_crawler, "interval", hours=6, id="crawler",
 # ── アプリ起動/終了 ───────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # ── DB テーブル作成 + 管理者アカウント初期シード ──────────────────────────
+    from database import engine, SessionLocal
+    from models import Base, Admin
+    Base.metadata.create_all(bind=engine)   # 未作成テーブルのみ作成（既存テーブルは変更しない）
+    with SessionLocal() as _db:
+        if not _db.query(Admin).filter(Admin.email == "s.tera78@gmail.com").first():
+            _db.add(Admin(email="s.tera78@gmail.com"))
+            _db.commit()
+            print("[DB] 管理者アカウント初期化: s.tera78@gmail.com")
+
     scheduler.start()
     print("[Scheduler] 起動")
     yield
@@ -60,6 +70,8 @@ app.include_router(admin_ui.router)
 app.include_router(site_types.router)
 app.include_router(prefecture_stats.router)
 app.include_router(webhooks.router)
+app.include_router(comments.router)
+app.include_router(contact.router)
 
 @app.get("/")
 def root():

@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Header, BackgroundTasks
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from database import get_db
-from models import Report, ModerationLog
+from models import Report, ModerationLog, Admin
 
 # バックフィルの実行状態を追跡
 _backfill_task: asyncio.Task | None = None
@@ -18,6 +18,51 @@ _archive_task: asyncio.Task | None = None
 _archive_started_at: datetime | None = None
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
+
+
+# ── 管理者プロフィール ─────────────────────────────────────────────────────────
+
+class AdminProfileUpdate(BaseModel):
+    email: Optional[str] = None
+
+
+@router.get("/profile", dependencies=[Depends(verify_admin)])
+def get_profile(db: Session = Depends(get_db)):
+    admin = db.query(Admin).first()
+    if not admin:
+        raise HTTPException(404, "管理者アカウントが見つかりません")
+    return {"id": admin.id, "email": admin.email, "created_at": str(admin.created_at)}
+
+
+@router.patch("/profile", dependencies=[Depends(verify_admin)])
+def update_profile(body: AdminProfileUpdate, db: Session = Depends(get_db)):
+    admin = db.query(Admin).first()
+    if not admin:
+        raise HTTPException(404, "管理者アカウントが見つかりません")
+    if body.email is not None:
+        admin.email = body.email
+    db.commit()
+    return {"id": admin.id, "email": admin.email}
+
+
+# ── 投稿物理削除（管理者専用・子テーブルをカスケード削除） ─────────────────────
+
+@router.delete("/reports/{report_id}", dependencies=[Depends(verify_admin)])
+def admin_delete_report(report_id: int, db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    r = db.query(Report).filter(Report.id == report_id).first()
+    if not r:
+        raise HTTPException(404, "not found")
+    # 1. コメントの自己参照FK(parent_id)を先にNULL化
+    db.execute(text("UPDATE comments SET parent_id = NULL WHERE report_id = :rid"), {"rid": report_id})
+    # 2. コメント削除
+    db.execute(text("DELETE FROM comments WHERE report_id = :rid"), {"rid": report_id})
+    # 3. モデレーションログ削除
+    db.execute(text("DELETE FROM moderation_log WHERE report_id = :rid"), {"rid": report_id})
+    # 4. 投稿本体削除
+    db.execute(text("DELETE FROM reports WHERE id = :rid"), {"rid": report_id})
+    db.commit()
+    return {"status": "deleted", "id": report_id}
 
 
 def verify_admin(x_admin_token: str = Header(...)):
