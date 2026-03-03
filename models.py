@@ -69,10 +69,11 @@ class Admin(Base):
     """管理者アカウント（メールアドレスで管理）"""
     __tablename__ = "admins"
 
-    id         = Column(Integer, primary_key=True)
-    email      = Column(String(255), unique=True, nullable=False)
-    created_at = Column(DateTime, server_default=func.now())
-    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    id            = Column(Integer, primary_key=True)
+    email         = Column(String(255), unique=True, nullable=False)
+    clerk_user_id = Column(String(256), nullable=True)   # Clerk の sub クレーム
+    created_at    = Column(DateTime, server_default=func.now())
+    updated_at    = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
 class Comment(Base):

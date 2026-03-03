@@ -42,7 +42,14 @@ async def lifespan(app: FastAPI):
     # ── DB テーブル作成 + 管理者アカウント初期シード ──────────────────────────
     from database import engine, SessionLocal
     from models import Base, Admin
+    from sqlalchemy import text as _text
     Base.metadata.create_all(bind=engine)   # 未作成テーブルのみ作成（既存テーブルは変更しない）
+    # 既存 admins テーブルに clerk_user_id カラムを追加（IF NOT EXISTS で冪等）
+    with engine.connect() as _conn:
+        _conn.execute(_text(
+            "ALTER TABLE admins ADD COLUMN IF NOT EXISTS clerk_user_id VARCHAR(256)"
+        ))
+        _conn.commit()
     with SessionLocal() as _db:
         if not _db.query(Admin).filter(Admin.email == "s.tera78@gmail.com").first():
             _db.add(Admin(email="s.tera78@gmail.com"))
