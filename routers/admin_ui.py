@@ -139,6 +139,7 @@ _HTML = """<!DOCTYPE html>
                 <th class="text-muted fw-normal">#</th>
                 <th>タイトル / 説明</th>
                 <th>データ</th>
+                <th style="min-width:170px">国籍（編集可）</th>
                 <th>AIスコア</th>
                 <th>AI判定理由</th>
                 <th>ソース</th>
@@ -162,6 +163,45 @@ const PALETTE = [
   '#0ea5e9','#d946ef','#ef4444','#3b82f6','#10b981'
 ];
 let _charts = {};
+
+// 国籍選択肢（DBと同じ順序）
+const NATIONALITY_OPTIONS = [
+  ['アジア', ['日本','中国','韓国','朝鮮','ベトナム','フィリピン','タイ',
+              'インドネシア','ミャンマー','カンボジア','ネパール','インド',
+              'パキスタン','バングラデシュ','スリランカ']],
+  ['中東・アフリカ', ['イラン','イラク','トルコ','シリア','クルド（民族）',
+                      'ナイジェリア','ガーナ','エチオピア','その他アフリカ']],
+  ['欧米・その他', ['アメリカ','ブラジル','メキシコ','ペルー','ロシア',
+                    'ウクライナ','その他ヨーロッパ','その他']],
+  ['不明', ['不明']],
+];
+
+function buildNationalitySelect(reportId, current) {
+  let opts = '';
+  for (const [grpLabel, nations] of NATIONALITY_OPTIONS) {
+    opts += `<optgroup label="${esc(grpLabel)}">`;
+    for (const n of nations) {
+      const sel = (n === current) ? ' selected' : '';
+      opts += `<option value="${esc(n)}"${sel}>${esc(n)}</option>`;
+    }
+    opts += '</optgroup>';
+  }
+  return `
+    <div class="d-flex align-items-center gap-1">
+      <select id="nat-sel-${reportId}"
+              class="form-select form-select-sm"
+              style="background:#111318;color:#e0e0e0;border-color:#2a2d3a;font-size:11px;max-width:130px;"
+              onchange="updateNationality(${reportId}, this.value)">${opts}</select>
+    </div>`;
+}
+
+async function updateNationality(id, value) {
+  await fetch(`/api/admin/queue/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', 'X-Admin-Token': tok() },
+    body: JSON.stringify({ nationality_type: value }),
+  });
+}
 
 // ─── 認証 ────────────────────────────────────────────────────────────────────
 function tok() { return localStorage.getItem('adm') || ''; }
@@ -315,22 +355,34 @@ async function loadQueue() {
       links.push(`<a href="${esc(r.archive_url)}" target="_blank"
                      class="btn btn-outline-warning btn-sm py-0 px-2 ms-1">魚拓</a>`);
 
-    const badges = r.data
-      ? Object.values(r.data)
-          .map(v => `<span class="badge bg-secondary me-1">${esc(v)}</span>`)
+    // data フィールドから nationality_type を除いた badges
+    const dataWithoutNat = r.data
+      ? Object.entries(r.data)
+          .filter(([k]) => k !== 'nationality_type')
+          .map(([, v]) => `<span class="badge bg-secondary me-1">${esc(v)}</span>`)
           .join('')
       : '';
 
+    // 訂正申請かどうかのバッジ
+    const correctionBadge = r.data?.original_report_id
+      ? `<span class="badge bg-info text-dark ms-1">訂正申請 #${r.data.original_report_id}</span>`
+      : '';
+
+    // 国籍ドロップダウン（現在値）
+    const currentNat = r.data?.nationality_type || '不明';
+    const natSelect = buildNationalitySelect(r.id, currentNat);
+
     tbody.innerHTML += `
 <tr>
-  <td class="text-muted small">${r.id}</td>
+  <td class="text-muted small">${r.id}${correctionBadge}</td>
   <td style="max-width:240px">
     <div class="fw-semibold text-truncate">${esc(r.title || '(なし)')}</div>
     <div class="text-muted small"
          style="white-space:pre-wrap;max-height:3.5em;overflow:hidden"
     >${esc((r.description || '').slice(0, 120))}</div>
   </td>
-  <td style="max-width:180px">${badges}</td>
+  <td style="max-width:180px">${dataWithoutNat}</td>
+  <td>${natSelect}</td>
   <td>${scTxt}</td>
   <td class="text-muted small" style="max-width:200px">${esc(r.ai_reason || '-')}</td>
   <td class="text-nowrap">${links.join('')}</td>
