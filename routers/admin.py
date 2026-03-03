@@ -21,9 +21,32 @@ _archive_started_at: datetime | None = None
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 
-def verify_admin(x_admin_token: str = Header(...)):
-    if x_admin_token != os.getenv("ADMIN_TOKEN"):
-        raise HTTPException(status_code=401, detail="Unauthorized")
+async def verify_admin(
+    request: Request,
+    x_admin_token: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    """管理者認証（x-admin-token または Clerk JWT の両方を受け付ける）"""
+    # Method 1: 既存の x-admin-token ヘッダー
+    env_token = os.getenv("ADMIN_TOKEN")
+    if x_admin_token and env_token and x_admin_token == env_token:
+        return
+
+    # Method 2: Clerk JWT (Authorization: Bearer <token>)
+    user_id = await get_current_user_optional(request)
+    if user_id:
+        admin = db.query(Admin).filter(Admin.clerk_user_id == user_id).first()
+        if admin:
+            return
+        # 初回: clerk_user_id 未登録の管理者にこの Clerk ユーザーを紐付け
+        admin_without_clerk = db.query(Admin).filter(Admin.clerk_user_id == None).first()
+        if admin_without_clerk:
+            admin_without_clerk.clerk_user_id = user_id
+            db.commit()
+            print(f"[Admin] Clerk user_id を自動登録: {user_id}")
+            return
+
+    raise HTTPException(status_code=401, detail="Unauthorized")
 
 
 # ── Clerk JWT で管理者認証 → ADMIN_TOKEN を返す ─────────────────────────────
@@ -122,6 +145,7 @@ def get_queue(db: Session = Depends(get_db)):
             "ai_reason":   r.ai_reason,
             "data":        r.data,
             "created_at":  str(r.created_at),
+            "occurred_at": str(r.occurred_at.date()) if r.occurred_at else None,
         }
         for r in reports
     ]
