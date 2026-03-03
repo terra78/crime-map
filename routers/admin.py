@@ -20,6 +20,11 @@ _archive_started_at: datetime | None = None
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 
+def verify_admin(x_admin_token: str = Header(...)):
+    if x_admin_token != os.getenv("ADMIN_TOKEN"):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
 # ── 管理者プロフィール ─────────────────────────────────────────────────────────
 
 class AdminProfileUpdate(BaseModel):
@@ -63,11 +68,6 @@ def admin_delete_report(report_id: int, db: Session = Depends(get_db)):
     db.execute(text("DELETE FROM reports WHERE id = :rid"), {"rid": report_id})
     db.commit()
     return {"status": "deleted", "id": report_id}
-
-
-def verify_admin(x_admin_token: str = Header(...)):
-    if x_admin_token != os.getenv("ADMIN_TOKEN"):
-        raise HTTPException(status_code=401, detail="Unauthorized")
 
 
 # ── 承認待ちキュー ────────────────────────────────────────────────────────────
