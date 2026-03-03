@@ -145,7 +145,7 @@ def get_queue(db: Session = Depends(get_db)):
             "ai_reason":   r.ai_reason,
             "data":        r.data,
             "created_at":  str(r.created_at),
-            "occurred_at": str(r.occurred_at.date()) if r.occurred_at else None,
+            "occurred_at": str(r.occurred_at) if r.occurred_at else None,
         }
         for r in reports
     ]
