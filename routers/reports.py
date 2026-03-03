@@ -242,16 +242,17 @@ def list_reports(
 
     return [
         {
-            "id":          r.id,
-            "title":       r.title,
-            "lat":         db.execute(text(f"SELECT ST_Y('{r.location}'::geometry)")).scalar(),
-            "lng":         db.execute(text(f"SELECT ST_X('{r.location}'::geometry)")).scalar(),
-            "address":     r.address,
-            "occurred_at": str(r.occurred_at) if r.occurred_at else None,
-            "data":        r.data,
+            "id":           r.id,
+            "title":        r.title,
+            "lat":          db.execute(text(f"SELECT ST_Y('{r.location}'::geometry)")).scalar(),
+            "lng":          db.execute(text(f"SELECT ST_X('{r.location}'::geometry)")).scalar(),
+            "address":      r.address,
+            "occurred_at":  str(r.occurred_at) if r.occurred_at else None,
+            "data":         r.data,
             "site_type_id": r.site_type_id,
-            "source_url":  r.source_url,
-            "archive_url": r.archive_url,
+            "source_url":   r.source_url,
+            "archive_url":  r.archive_url,
+            "submitted_by": r.submitted_by,
         }
         for r in reports
     ]
@@ -262,8 +263,24 @@ def list_reports(
 def get_report(report_id: int, db: Session = Depends(get_db)):
     r = db.query(Report).filter(Report.id == report_id).first()
     if not r:
-        return {"error": "not found"}, 404
-    return r
+        raise HTTPException(status_code=404, detail="not found")
+    lat = db.execute(text(f"SELECT ST_Y('{r.location}'::geometry)")).scalar()
+    lng = db.execute(text(f"SELECT ST_X('{r.location}'::geometry)")).scalar()
+    return {
+        "id":           r.id,
+        "title":        r.title,
+        "description":  r.description,
+        "address":      r.address,
+        "occurred_at":  str(r.occurred_at) if r.occurred_at else None,
+        "data":         r.data,
+        "source_url":   r.source_url,
+        "site_type_id": r.site_type_id,
+        "status":       r.status,
+        "submitted_by": r.submitted_by,
+        "lat":          lat,
+        "lng":          lng,
+        "created_at":   str(r.created_at),
+    }
 
 
 # ── 編集（投稿者本人のみ）────────────────────────────────────────────────────

@@ -167,7 +167,7 @@ async def fetch_rss(url: str) -> list[dict]:
 
 async def fetch_article(url: str) -> tuple[str, str]:
     """
-    記事本文をスクレイピングして返す（最大3000文字）。
+    記事本文をスクレイピングして返す（最大5000文字）。
     Google News などのリダイレクト URL は最終 URL を返す。
     戻り値: (本文テキスト, 最終URL)
     """
@@ -184,8 +184,19 @@ async def fetch_article(url: str) -> tuple[str, str]:
         for tag in soup(["nav", "header", "footer", "script", "style", "aside",
                           "noscript", "iframe", "form"]):
             tag.decompose()
-        text = soup.get_text(separator="\n", strip=True)
-        return text[:3000], final_url
+
+        # 記事本文を優先的に抽出（<article> → <main> → ページ全体の順）
+        article_body = soup.find("article")
+        if article_body:
+            text = article_body.get_text(separator="\n", strip=True)
+        else:
+            main_body = soup.find("main")
+            if main_body:
+                text = main_body.get_text(separator="\n", strip=True)
+            else:
+                text = soup.get_text(separator="\n", strip=True)
+
+        return text[:5000], final_url
     except Exception as e:
         return f"取得失敗: {e}", url
 
@@ -230,6 +241,10 @@ async def extract_info(article_text: str, title: str, rss_summary: str = "") -> 
     if is_paywalled and rss_summary:
         # 本文が使えない場合はRSSサマリーをフォールバックとして使用
         context_text = f"（記事本文は取得不可）\nRSS概要: {rss_summary}"
+    elif rss_summary:
+        # 本文が取れている場合もRSSサマリーを補足情報として先頭に追加
+        # （記事本文の切り捨てで国籍・氏名などが落ちる場合の保険）
+        context_text = f"RSS概要: {rss_summary}\n\n記事本文:\n{article_text}"
     else:
         context_text = article_text
 

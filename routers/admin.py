@@ -2,7 +2,9 @@ import os
 import re
 import asyncio
 from datetime import datetime
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Header, BackgroundTasks
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from database import get_db
 from models import Report, ModerationLog
@@ -48,6 +50,25 @@ def get_queue(db: Session = Depends(get_db)):
     ]
 
 
+# ── 承認待ちキュー インライン編集 ────────────────────────────────────────────
+class QueueItemUpdate(BaseModel):
+    nationality_type: Optional[str] = None
+
+
+@router.patch("/queue/{report_id}", dependencies=[Depends(verify_admin)])
+def update_queue_item(report_id: int, body: QueueItemUpdate, db: Session = Depends(get_db)):
+    """承認待ちキューのデータフィールドをインライン編集（国籍など）"""
+    r = db.query(Report).filter(Report.id == report_id).first()
+    if not r:
+        raise HTTPException(404, "not found")
+    data = dict(r.data or {})
+    if body.nationality_type is not None:
+        data["nationality_type"] = body.nationality_type
+    r.data = data
+    db.commit()
+    return {"status": "updated", "data": r.data}
+
+
 # ── 承認 ──────────────────────────────────────────────────────────────────────
 @router.post("/approve/{report_id}", dependencies=[Depends(verify_admin)])
 def approve(report_id: int, db: Session = Depends(get_db)):
@@ -57,6 +78,23 @@ def approve(report_id: int, db: Session = Depends(get_db)):
     r.status      = "human_approved"
     r.approved_at = datetime.now()
     db.add(ModerationLog(report_id=report_id, action="human_approve", actor="admin"))
+
+    # 訂正申請の場合、元投稿を "corrected" ステータスに変更
+    original_id = (r.data or {}).get("original_report_id")
+    if original_id:
+        original = db.query(Report).filter(Report.id == int(original_id)).first()
+        if original:
+            original.status = "corrected"
+            orig_data = dict(original.data or {})
+            orig_data["corrected_by_report"] = report_id
+            original.data = orig_data
+            db.add(ModerationLog(
+                report_id=int(original_id),
+                action="corrected",
+                actor="admin",
+                reason=f"訂正申請 #{report_id} により訂正済み",
+            ))
+
     db.commit()
     return {"status": "approved"}
 
